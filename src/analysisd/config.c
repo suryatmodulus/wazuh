@@ -59,6 +59,9 @@ int GlobalConf(const char *cfgfile)
     Config.white_list = NULL;
     Config.hostname_white_list = NULL;
 
+    Config.eps.maximum = EPS_LIMITS_MIN_EPS;
+    Config.eps.timeframe = EPS_LIMITS_DEFAULT_TIMEFRAME;
+
     /* Default actions -- only log above level 1 */
     Config.mailbylevel = 7;
     Config.logbylevel  = 1;
@@ -158,6 +161,10 @@ cJSON *getGlobalConfig(void) {
     if (Config.custom_alert_output) cJSON_AddStringToObject(global,"custom_alert_output",Config.custom_alert_output_format);
     cJSON_AddNumberToObject(global,"rotate_interval",Config.rotate_interval);
     cJSON_AddNumberToObject(global,"max_output_size",Config.max_output_size);
+    cJSON *eps = cJSON_CreateObject();
+    cJSON_AddNumberToObject(eps,"maximum",Config.eps.maximum);
+    cJSON_AddNumberToObject(eps,"timeframe",Config.eps.timeframe);
+    cJSON_AddItemToObject(global, "eps", eps);
 
 #ifdef LIBGEOIP_ENABLED
     if (Config.geoip_db_path) cJSON_AddStringToObject(global,"geoip_db_path",Config.geoip_db_path);

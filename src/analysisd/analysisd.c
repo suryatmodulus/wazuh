@@ -50,6 +50,13 @@
 #include "output/zeromq.h"
 #endif
 
+#ifdef WAZUH_UNIT_TESTING
+// Remove STATIC qualifier from tests
+#define STATIC
+#else
+#define STATIC static
+#endif
+
 /** Prototypes **/
 void OS_ReadMSG(int m_queue);
 static void LoopRule(RuleNode *curr_node, FILE *flog);
@@ -75,6 +82,45 @@ static void DumpLogstats(void);
 // Message handler thread
 void * ad_input_main(void * args);
 
+/**
+ * @brief Update and validate limits
+ *
+ * This is a private function.
+ */
+STATIC void update_limits(void);
+
+/**
+ * @brief Load the limits structure
+ *
+ * This is a private function.
+ * @param eps eps amount
+ * @param timeframe timeframe size
+ */
+STATIC void load_limits(unsigned int eps, unsigned int timeframe);
+
+/**
+ * @brief Get a credit to process an event by decrementing the value of the semaphore
+ *
+ * This is a private function.
+ */
+STATIC void get_eps_credit(void);
+
+/**
+ * @brief Increments the current cell eps counter
+ *
+ * This is a private function.
+ */
+STATIC void increase_event_counter(void);
+
+/**
+ * @brief Add 'credits' to the semaphore
+ *
+ * This is a private function.
+ *
+ * @param Credits to increase.
+ */
+STATIC void generate_eps_credits(unsigned int credits);
+
 /** Global definitions **/
 int today;
 int thishour;
@@ -97,6 +143,7 @@ static unsigned int hourly_events;
 static unsigned int hourly_syscheck;
 static unsigned int hourly_firewall;
 
+limits_t limits;
 
 /* Archives writer thread */
 void * w_writer_thread(__attribute__((unused)) void * args );
@@ -234,6 +281,11 @@ pthread_mutex_t process_event_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Reported mutexes */
 static pthread_mutex_t writer_threads_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* eps mutex */
+pthread_mutex_t limit_eps_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Credits EPS semaphore */
+sem_t credits_eps_semaphore;
 
 /* To translate between month (int) to month (char) */
 static const char *(month[]) = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -977,6 +1029,13 @@ void OS_ReadMSG_analysisd(int m_queue)
 
     mdebug1("FTS_Init completed.");
 
+    /* Initialize EPS semaphore credits */
+    sem_init(&credits_eps_semaphore, 0, 0);
+
+    /* Initialize limits structure */
+    memset(&limits, 0, sizeof(limits));
+    load_limits(Config.eps.maximum, Config.eps.timeframe);
+
     /* Create message handler thread */
     w_create_thread(ad_input_main, &m_queue);
 
@@ -1053,6 +1112,7 @@ void OS_ReadMSG_analysisd(int m_queue)
 
     while (1) {
         sleep(1);
+        update_limits();
     }
 }
 
@@ -1495,10 +1555,12 @@ void * w_decode_syscheck_thread(__attribute__((unused)) void * args){
     /* Initialize the integrity database */
     sdb_init(&sdb, fim_decoder);
 
-    while(1){
+    while(1) {
 
         /* Receive message from queue */
         if (msg = queue_pop_ex(decode_queue_syscheck_input), msg) {
+            get_eps_credit();
+
             int res = 0;
             os_calloc(1, sizeof(Eventinfo), lf);
             os_calloc(Config.decoder_order_size, sizeof(DynamicField), lf->fields);
@@ -1543,10 +1605,12 @@ void * w_decode_syscollector_thread(__attribute__((unused)) void * args){
     char *msg = NULL;
     int socket = -1;
 
-    while(1){
+    while(1) {
 
         /* Receive message from queue */
         if (msg = queue_pop_ex(decode_queue_syscollector_input), msg) {
+            get_eps_credit();
+
             os_calloc(1, sizeof(Eventinfo), lf);
             os_calloc(Config.decoder_order_size, sizeof(DynamicField), lf->fields);
 
@@ -1586,10 +1650,11 @@ void * w_decode_rootcheck_thread(__attribute__((unused)) void * args){
     Eventinfo *lf = NULL;
     char *msg = NULL;
 
-    while(1){
+    while(1) {
 
         /* Receive message from queue */
         if (msg = queue_pop_ex(decode_queue_rootcheck_input), msg) {
+            get_eps_credit();
 
             os_calloc(1, sizeof(Eventinfo), lf);
             os_calloc(Config.decoder_order_size, sizeof(DynamicField), lf->fields);
@@ -1629,10 +1694,11 @@ void * w_decode_sca_thread(__attribute__((unused)) void * args){
     char *msg = NULL;
     int socket = -1;
 
-    while(1){
+    while(1) {
 
         /* Receive message from queue */
         if (msg = queue_pop_ex(decode_queue_sca_input), msg) {
+            get_eps_credit();
 
             os_calloc(1, sizeof(Eventinfo), lf);
             os_calloc(Config.decoder_order_size, sizeof(DynamicField), lf->fields);
@@ -1671,10 +1737,12 @@ void * w_decode_hostinfo_thread(__attribute__((unused)) void * args){
     Eventinfo *lf = NULL;
     char * msg = NULL;
 
-    while(1){
+    while(1) {
 
         /* Receive message from queue */
         if (msg = queue_pop_ex(decode_queue_hostinfo_input), msg) {
+            get_eps_credit();
+
             os_calloc(1, sizeof(Eventinfo), lf);
             os_calloc(Config.decoder_order_size, sizeof(DynamicField), lf->fields);
 
@@ -1716,10 +1784,12 @@ void * w_decode_event_thread(__attribute__((unused)) void * args){
     memset(&decoder_match, 0, sizeof(regex_matching));
     int sock = -1;
 
-    while(1){
+    while(1) {
 
         /* Receive message from queue */
         if (msg = queue_pop_ex(decode_queue_event_input), msg) {
+            get_eps_credit();
+
             os_calloc(1, sizeof(Eventinfo), lf);
             os_calloc(Config.decoder_order_size, sizeof(DynamicField), lf->fields);
 
@@ -1760,14 +1830,16 @@ void * w_decode_event_thread(__attribute__((unused)) void * args){
     }
 }
 
-void * w_decode_winevt_thread(__attribute__((unused)) void * args){
+void * w_decode_winevt_thread(__attribute__((unused)) void * args) {
     Eventinfo *lf = NULL;
     char * msg = NULL;
 
-    while(1){
+    while(1) {
 
         /* Receive message from queue */
         if (msg = queue_pop_ex(decode_queue_winevt_input), msg) {
+            get_eps_credit();
+
             os_calloc(1, sizeof(Eventinfo), lf);
             os_calloc(Config.decoder_order_size, sizeof(DynamicField), lf->fields);
 
@@ -1805,24 +1877,25 @@ void * w_dispatch_dbsync_thread(__attribute__((unused)) void * args) {
     dbsync_context_t ctx = { .db_sock = -1, .ar_sock = -1 };
 
     for (;;) {
-        msg = queue_pop_ex(dispatch_dbsync_input);
-        assert(msg != NULL);
+        if (msg = queue_pop_ex(dispatch_dbsync_input), msg) {
+            get_eps_credit();
 
-        os_calloc(1, sizeof(Eventinfo), lf);
-        os_calloc(Config.decoder_order_size, sizeof(DynamicField), lf->fields);
-        Zero_Eventinfo(lf);
+            os_calloc(1, sizeof(Eventinfo), lf);
+            os_calloc(Config.decoder_order_size, sizeof(DynamicField), lf->fields);
+            Zero_Eventinfo(lf);
 
-        if (OS_CleanMSG(msg, lf) < 0) {
-            merror(IMSG_ERROR, msg);
+            if (OS_CleanMSG(msg, lf) < 0) {
+                merror(IMSG_ERROR, msg);
+                Free_Eventinfo(lf);
+                free(msg);
+                continue;
+            }
+
+            DispatchDBSync(&ctx, lf);
+            w_inc_dbsync_dispatched_messages();
             Free_Eventinfo(lf);
             free(msg);
-            continue;
         }
-
-        DispatchDBSync(&ctx, lf);
-        w_inc_dbsync_dispatched_messages();
-        Free_Eventinfo(lf);
-        free(msg);
     }
 
     return NULL;
@@ -1833,51 +1906,52 @@ void * w_dispatch_upgrade_module_thread(__attribute__((unused)) void * args) {
     Eventinfo * lf;
 
     while (true) {
-        msg = queue_pop_ex(upgrade_module_input);
-        assert(msg != NULL);
+        if (msg = queue_pop_ex(upgrade_module_input), msg) {
+            get_eps_credit();
 
-        os_calloc(1, sizeof(Eventinfo), lf);
-        os_calloc(Config.decoder_order_size, sizeof(DynamicField), lf->fields);
-        Zero_Eventinfo(lf);
+            os_calloc(1, sizeof(Eventinfo), lf);
+            os_calloc(Config.decoder_order_size, sizeof(DynamicField), lf->fields);
+            Zero_Eventinfo(lf);
 
-        if (OS_CleanMSG(msg, lf) < 0) {
-            merror(IMSG_ERROR, msg);
-            Free_Eventinfo(lf);
-            free(msg);
-            continue;
-        }
-        free(msg);
-
-        // Inserts agent id into incomming message and sends it to upgrade module
-        cJSON *message_obj = cJSON_Parse(lf->log);
-
-        if (message_obj) {
-            cJSON *message_params = cJSON_GetObjectItem(message_obj, "parameters");
-
-            if (message_params) {
-                int sock = OS_ConnectUnixDomain(WM_UPGRADE_SOCK, SOCK_STREAM, OS_MAXSTR);
-
-                if (sock == OS_SOCKTERR) {
-                    merror("Could not connect to upgrade module socket at '%s'. Error: %s", WM_UPGRADE_SOCK, strerror(errno));
-                } else {
-                    int agent = atoi(lf->agent_id);
-                    cJSON* agents = cJSON_CreateIntArray(&agent, 1);
-                    cJSON_AddItemToObject(message_params, "agents", agents);
-
-                    char *message = cJSON_PrintUnformatted(message_obj);
-                    OS_SendSecureTCP(sock, strlen(message), message);
-                    os_free(message);
-
-                    close(sock);
-                }
-            } else {
-                merror("Could not get parameters from upgrade message: %s", lf->log);
+            if (OS_CleanMSG(msg, lf) < 0) {
+                merror(IMSG_ERROR, msg);
+                Free_Eventinfo(lf);
+                free(msg);
+                continue;
             }
-            cJSON_Delete(message_obj);
-        } else {
-            merror("Could not parse upgrade message: %s", lf->log);
+            free(msg);
+
+            // Inserts agent id into incomming message and sends it to upgrade module
+            cJSON *message_obj = cJSON_Parse(lf->log);
+
+            if (message_obj) {
+                cJSON *message_params = cJSON_GetObjectItem(message_obj, "parameters");
+
+                if (message_params) {
+                    int sock = OS_ConnectUnixDomain(WM_UPGRADE_SOCK, SOCK_STREAM, OS_MAXSTR);
+
+                    if (sock == OS_SOCKTERR) {
+                        merror("Could not connect to upgrade module socket at '%s'. Error: %s", WM_UPGRADE_SOCK, strerror(errno));
+                    } else {
+                        int agent = atoi(lf->agent_id);
+                        cJSON* agents = cJSON_CreateIntArray(&agent, 1);
+                        cJSON_AddItemToObject(message_params, "agents", agents);
+
+                        char *message = cJSON_PrintUnformatted(message_obj);
+                        OS_SendSecureTCP(sock, strlen(message), message);
+                        os_free(message);
+
+                        close(sock);
+                    }
+                } else {
+                    merror("Could not get parameters from upgrade message: %s", lf->log);
+                }
+                cJSON_Delete(message_obj);
+            } else {
+                merror("Could not parse upgrade message: %s", lf->log);
+            }
+            Free_Eventinfo(lf);
         }
-        Free_Eventinfo(lf);
     }
 
     return NULL;
@@ -2393,4 +2467,71 @@ void w_init_queues(){
 
     /* Initialize upgrade module message queue */
     upgrade_module_input = queue_init(getDefine_Int("analysisd", "upgrade_queue_size", 128, 2000000));
+}
+
+STATIC void update_limits(void) {
+
+    if (limits.enabled) {
+        w_mutex_lock(&limit_eps_mutex);
+
+        if (limits.current_cell == limits.timeframe - 1) {
+
+            limits.total_eps_buffer = limits.total_eps_buffer + limits.circ_buf[limits.current_cell] - limits.circ_buf[0];
+
+            if (limits.circ_buf[0]) {
+                generate_eps_credits(limits.circ_buf[0]);
+            }
+
+            memmove(limits.circ_buf, limits.circ_buf + 1, (limits.timeframe - 1) * sizeof(unsigned int));
+            limits.circ_buf[limits.current_cell] = 0;
+
+        } else if (limits.current_cell < limits.timeframe - 1) {
+            limits.total_eps_buffer += limits.circ_buf[limits.current_cell++];
+
+        } else {
+            merror("limits current_cell exceeded limits: '%d'", limits.current_cell);
+            limits.current_cell = limits.timeframe - 1;
+        }
+        w_mutex_unlock(&limit_eps_mutex);
+    }
+}
+
+STATIC void load_limits(unsigned int eps, unsigned int timeframe) {
+    if (eps > 0) {
+        limits.eps = eps;
+        limits.timeframe = timeframe;
+
+        os_calloc(limits.timeframe, sizeof(unsigned int), limits.circ_buf);
+
+        limits.total_eps_buffer = 0;
+        limits.max_eps = limits.eps * limits.timeframe;
+
+        generate_eps_credits(limits.max_eps);
+
+        minfo("eps limit enabled, eps: '%d', timeframe: '%d', events per timeframe: '%d'", limits.eps, limits.timeframe, limits.max_eps);
+        limits.enabled = true;
+    } else {
+        minfo("eps limit disabled");
+    }
+}
+
+STATIC void get_eps_credit(void) {
+    if (limits.enabled) {
+        sem_wait(&credits_eps_semaphore);
+        increase_event_counter();
+    }
+}
+
+STATIC void increase_event_counter(void) {
+    w_mutex_lock(&limit_eps_mutex);
+    if (limits.circ_buf) {
+        limits.circ_buf[limits.current_cell]++;
+    }
+    w_mutex_unlock(&limit_eps_mutex);
+}
+
+STATIC void generate_eps_credits(unsigned int credits) {
+    for(unsigned int i = 0; i < credits; i++) {
+        sem_post(&credits_eps_semaphore);
+    }
 }

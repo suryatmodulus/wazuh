@@ -12,6 +12,7 @@
 #define LOGAUDIT_H
 
 #include <sys/types.h>
+#include <semaphore.h>
 
 #include "decoders/decoder.h"
 #include "rules.h"
@@ -75,14 +76,14 @@ size_t asyscom_getconfig(const char * section, char ** output);
 
 /**
  * @brief Get the number of elements divided by the size of queues
- * 
+ *
  * Values are save in state's variables
  */
 void w_get_queues_size();
 
 /**
  * @brief Obtains analysisd's queues sizes
- * 
+ *
  * Values are save in state's variables
  */
 void w_get_initial_queues_size();
@@ -97,6 +98,17 @@ void w_init_queues();
 
 #define WAZUH_SERVER    "wazuh-server"
 #define MAX_DECODER_ORDER_SIZE  1024
+
+/* EPS limits struct */
+typedef struct _limits_t {
+    unsigned int eps;
+    unsigned int timeframe;
+    unsigned int max_eps;
+    unsigned int total_eps_buffer;
+    unsigned int current_cell;
+    unsigned int * circ_buf;
+    bool enabled;
+} limits_t;
 
 extern OSHash *fim_agentinfo;
 extern int num_rule_matching_threads;
