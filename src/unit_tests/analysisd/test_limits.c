@@ -13,26 +13,22 @@
 #include <cmocka.h>
 #include <stdio.h>
 
-#include "../../analysisd/analysisd.h"
+#include "shared.h"
+#include "../../analysisd/limits.h"
 
 extern sem_t credits_eps_semaphore;
-//extern pthread_mutex_t limit_eps_mutex = PTHREAD_MUTEX_INITIALIZER;
-//extern pthread_mutex_t wait_sem = PTHREAD_MUTEX_INITIALIZER;
 extern limits_t limits;
 
 void generate_eps_credits(unsigned int credits);
 void increase_event_counter(void);
-void get_eps_credit(void);
-void load_limits(unsigned int eps, unsigned int timeframe);
-void update_limits(void);
 
 // Setup / Teardown
+
 static int test_setup(void **state) {
     memset(&limits, 0, sizeof(limits));
     limits.enabled = true;
     limits.timeframe = 10;
     limits.eps = 10;
-    limits.max_eps = limits.eps * limits.timeframe;
     os_calloc(limits.timeframe, sizeof(unsigned int), limits.circ_buf);
 
     return OS_SUCCESS;
@@ -47,6 +43,7 @@ static int test_teardown(void **state) {
 }
 
 /* Tests */
+
 // generate_eps_credits
 void test_generate_eps_credits_ok(void ** state)
 {
@@ -96,31 +93,14 @@ void test_get_eps_credit_ok(void ** state)
 }
 
 // load_limits
-void test_load_limits_disabled(void ** state)
-{
-    int current_credits;
-    limits.enabled = false;
-    sem_init(&credits_eps_semaphore, 0, 0);
-    expect_string(__wrap__minfo, formatted_msg, "eps limit disabled");
-
-    load_limits(0, 5);
-
-    assert_false(limits.enabled);
-    sem_getvalue(&credits_eps_semaphore, &current_credits);
-    assert_int_equal(0, current_credits);
-    sem_destroy(&credits_eps_semaphore);
-}
-
 void test_load_limits_ok(void ** state)
 {
     int current_credits;
     limits.enabled = false;
     sem_init(&credits_eps_semaphore, 0, 0);
-    expect_string(__wrap__minfo, formatted_msg, "eps limit enabled, eps: '100', timeframe: '5', events per timeframe: '500'");
 
     load_limits(100, 5);
 
-    assert_int_equal(limits.max_eps, 500);
     assert_int_equal(limits.eps, 100);
     assert_int_equal(limits.timeframe, 5);
     assert_true(limits.enabled);
@@ -134,11 +114,9 @@ void test_load_limits_timeframe_zero(void ** state)
     int current_credits;
     limits.enabled = false;
     sem_init(&credits_eps_semaphore, 0, 0);
-    expect_string(__wrap__minfo, formatted_msg, "eps limit enabled, eps: '100', timeframe: '0', events per timeframe: '0'");
 
     load_limits(100, 0);
 
-    assert_int_equal(limits.max_eps, 0);
     assert_int_equal(limits.eps, 100);
     assert_int_equal(limits.timeframe, 0);
     assert_true(limits.enabled);
@@ -147,78 +125,41 @@ void test_load_limits_timeframe_zero(void ** state)
     sem_destroy(&credits_eps_semaphore);
 }
 
+// update_limits
 void test_update_limits_current_cell_less_than_timeframe(void ** state)
 {
     limits.current_cell = 5;
+    limits.circ_buf[0] = 5;
+    limits.circ_buf[1] = 10;
     limits.circ_buf[limits.current_cell] = 25;
+
     update_limits();
 
-    assert_int_equal(limits.max_eps, 100);
     assert_int_equal(limits.eps, 10);
     assert_int_equal(limits.timeframe, 10);
     assert_int_equal(limits.current_cell, 6);
-    assert_int_equal(limits.total_eps_buffer, 25);
+    assert_int_equal(limits.circ_buf[0], 5);
+    assert_int_equal(limits.circ_buf[1], 10);
+    assert_int_equal(limits.circ_buf[limits.current_cell - 1], 25);
+    assert_int_equal(limits.circ_buf[limits.current_cell], 0);
 }
 
 void test_update_limits_current_cell_timeframe_limit(void ** state)
 {
     limits.current_cell = limits.timeframe - 1;
-    limits.circ_buf[0] = 0;
-    limits.total_eps_buffer = 20;
-    update_limits();
-
-    assert_int_equal(limits.max_eps, 100);
-    assert_int_equal(limits.eps, 10);
-    assert_int_equal(limits.timeframe, 10);
-    assert_int_equal(limits.current_cell, limits.timeframe - 1);
-    assert_int_equal(limits.total_eps_buffer, 20);
-}
-
-void test_update_limits_current_cell_timeframe_limit_rest_element(void ** state)
-{
-    limits.current_cell = limits.timeframe - 1;
     limits.circ_buf[0] = 5;
-    unsigned int aux = limits.total_eps_buffer + limits.circ_buf[limits.current_cell] - limits.circ_buf[0];
+    limits.circ_buf[1] = 10;
+    limits.circ_buf[limits.current_cell] = 25;
 
     update_limits();
 
-    assert_int_equal(limits.max_eps, 100);
     assert_int_equal(limits.eps, 10);
     assert_int_equal(limits.timeframe, 10);
     assert_int_equal(limits.current_cell, limits.timeframe - 1);
-    assert_int_equal(limits.total_eps_buffer, aux);
-}
-
-void test_update_limits_current_cell_timeframe_limit_complete_diff(void ** state)
-{
-    limits.current_cell = limits.timeframe - 1;
-    limits.total_eps_buffer = 99;
-    limits.circ_buf[0] = 10;
-    limits.circ_buf[limits.current_cell] = 5;
-    unsigned int aux = limits.total_eps_buffer + limits.circ_buf[limits.current_cell] - limits.circ_buf[0];
-
-    update_limits();
-
-    assert_int_equal(limits.max_eps, 100);
-    assert_int_equal(limits.eps, 10);
-    assert_int_equal(limits.timeframe, 10);
-    assert_int_equal(limits.current_cell, limits.timeframe - 1);
-    assert_int_equal(limits.total_eps_buffer, aux);
-}
-
-void test_update_limits_current_cell_exceeded(void ** state)
-{
-    limits.current_cell = limits.timeframe + 1;
-    limits.total_eps_buffer = 5;
-    expect_string(__wrap__merror, formatted_msg, "limits current_cell exceeded limits: '11'");
-
-    update_limits();
-
-    assert_int_equal(limits.max_eps, 100);
-    assert_int_equal(limits.eps, 10);
-    assert_int_equal(limits.timeframe, 10);
-    assert_int_equal(limits.current_cell, limits.timeframe - 1);
-    assert_int_equal(limits.total_eps_buffer, 5);
+    assert_int_equal(limits.circ_buf[0], 10);
+    assert_int_equal(limits.circ_buf[1], 0);
+    assert_int_equal(limits.circ_buf[limits.current_cell - 1], 25);
+    assert_int_equal(limits.circ_buf[limits.current_cell], 0);
 }
 
 int main(void)
@@ -232,15 +173,11 @@ int main(void)
         // Test get_eps_credit
         cmocka_unit_test_setup_teardown(test_get_eps_credit_ok, test_setup, test_teardown),
         // Test load_limits
-        cmocka_unit_test_teardown(test_load_limits_disabled, test_teardown),
         cmocka_unit_test_teardown(test_load_limits_ok, test_teardown),
         cmocka_unit_test_teardown(test_load_limits_timeframe_zero, test_teardown),
         // // Test update_limits
         cmocka_unit_test_setup_teardown(test_update_limits_current_cell_less_than_timeframe, test_setup, test_teardown),
         cmocka_unit_test_setup_teardown(test_update_limits_current_cell_timeframe_limit, test_setup, test_teardown),
-        cmocka_unit_test_setup_teardown(test_update_limits_current_cell_timeframe_limit_rest_element, test_setup, test_teardown),
-        cmocka_unit_test_setup_teardown(test_update_limits_current_cell_timeframe_limit_complete_diff, test_setup, test_teardown),
-        cmocka_unit_test_setup_teardown(test_update_limits_current_cell_exceeded, test_setup, test_teardown),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);
