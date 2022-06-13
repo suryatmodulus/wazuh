@@ -33,7 +33,7 @@ namespace Utils
     {
         public:
             MsgDispatcher()
-                : ThreadType{std::bind(&DispatcherType::dispatch, this, std::placeholders::_1)}
+                : ThreadType{std::bind(&DispatcherType::dispatch, this, std::placeholders::_1), 1}
             {
             }
             // LCOV_EXCL_START
