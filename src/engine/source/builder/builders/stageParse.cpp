@@ -144,18 +144,19 @@ base::Lifter stageBuilderParse(const base::DocumentValue& def,
         }
 
         auto newOp = [name = std::string {logql->name.GetString()},
-                      parserOp = std::move(parseOp)](base::Observable o)
+                      parserOp = std::move(parseOp), tr](base::Observable o)
         {
             return o.map(
                 [name = std::move(name),
-                 parserOp = std::move(parserOp)](base::Event e)
+                 parserOp = std::move(parserOp), tr](base::Event e)
                 {
                     // TODO handle item not existing in event
                     auto jsonName = json::formatJsonPath(name);
                     const auto& ev = e->getEvent()->get(jsonName);
                     if (!ev.IsString())
                     {
-                        // TODO error
+                        tr(fmt::format("[Stage parse] {} is not a string",
+                                       jsonName));
                         return e;
                     }
 
@@ -163,7 +164,8 @@ base::Lifter stageBuilderParse(const base::DocumentValue& def,
                     auto ok = parserOp(ev.GetString(), result);
                     if (!ok)
                     {
-                        // TODO error
+                        tr(fmt::format("[Stage parse] {} failed to parse",
+                                       jsonName));
                         return e;
                     }
 
@@ -173,7 +175,8 @@ base::Lifter stageBuilderParse(const base::DocumentValue& def,
                             json::formatJsonPath(val.first.c_str());
                         if (!any2Json(val.second, resultPath, e->getEvent().get()))
                         {
-                            // ERROR
+                            tr(fmt::format("[Stage parse] failed to set {}",
+                                           resultPath));
                             return e;
                         }
                     }
