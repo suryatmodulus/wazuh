@@ -1,0 +1,3 @@
+name: rule_test
+check:
+  - nonexistentfield: +exists

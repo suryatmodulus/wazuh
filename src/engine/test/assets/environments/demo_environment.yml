@@ -1,0 +1,6 @@
+decoders:
+  - default_decoder
+rules:
+  - default_rule
+outputs:
+  - output_demo

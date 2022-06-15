@@ -1,0 +1,7 @@
+name: output_test
+check:
+  - message: +exists
+
+outputs:
+  - file:
+      path: /tmp/filepath.txt
