@@ -7,15 +7,17 @@
  * Foundation.
  */
 
-#include <gtest/gtest.h>
 #include "testUtils.hpp"
+#include <gtest/gtest.h>
 
 #include "assetBuilderDecoder.hpp"
 
 #include "combinatorBuilderChain.hpp"
+#include "combinatorBuilderBroadcast.hpp"
 #include "opBuilderCondition.hpp"
 #include "opBuilderHelperFilter.hpp"
 #include "stageBuilderCheck.hpp"
+#include "stageParse.hpp"
 
 #include "opBuilderMap.hpp"
 #include "opBuilderMapReference.hpp"
@@ -26,11 +28,12 @@ using namespace base;
 namespace bld = builder::internals::builders;
 
 using FakeTrFn = std::function<void(std::string)>;
-static FakeTrFn tr = [](std::string msg){};
+static FakeTrFn tr = [](std::string msg) {
+};
 
 TEST(AssetBuilderDecoder, BuildsAllNonRegistered)
 {
-    Document doc{R"({
+    Document doc {R"({
         "name": "test",
         "check": [
             {"field": "value"}
@@ -46,7 +49,8 @@ TEST(AssetBuilderDecoder, BuildsAllNonRegistered)
         ]
     })"};
 
-    ASSERT_THROW(bld::assetBuilderDecoder(doc), std::_Nested_exception<std::runtime_error>);
+    ASSERT_THROW(bld::assetBuilderDecoder(doc),
+                 std::_Nested_exception<std::runtime_error>);
 }
 
 TEST(AssetBuilderDecoder, Builds)
@@ -70,9 +74,12 @@ TEST(AssetBuilderDecoder, Builds)
     Registry::registerBuilder("middle.condition", c);
     c = bld::opBuilderCondition;
     Registry::registerBuilder("condition", c);
-    Document doc{R"({
+    c = bld::stageBuilderCheck;
+    Registry::registerBuilder("check", c);
+    Document doc {R"({
         "name": "test",
         "check": [
+            {"field": "value"}
         ],
         "normalize":
         [
@@ -90,28 +97,39 @@ TEST(AssetBuilderDecoder, Builds)
 
 TEST(AssetBuilderDecoder, BuildsOperates)
 {
-    Document doc{R"({
+    BuilderVariant c = bld::stageBuilderParse;
+    Registry::registerBuilder("parse", c);
+    Registry::registerBuilder("combinator.broadcast", bld::combinatorBuilderBroadcast);
+
+    Document doc {R"({
         "name": "test",
         "check": [
             {"field": "value"}
         ],
+        "parse":
+        {
+            "logql":[
+                {
+                    "field": "<user.name>"
+                }
+            ]
+        },
         "normalize":
         [
             {
                 "map":
                 {
-                    "mapped.field": "$field"
+                    "mapped.name": "$user.name"
                 }
             }
         ]
     })"};
-
     auto dec = bld::assetBuilderDecoder(doc);
 
     Observable input = observable<>::create<Event>(
         [=](auto s)
         {
-            //TODO: fix json interface to not throw exception
+            // TODO: fix json interface to not throw exception
             s.on_next(createSharedEvent(R"({
                 "field1": "value",
                 "field2": 2,
@@ -144,6 +162,6 @@ TEST(AssetBuilderDecoder, BuildsOperates)
     ASSERT_EQ(expected.size(), 2);
     for (auto e : expected)
     {
-        ASSERT_STREQ(e->getEvent()->get("/mapped/field").GetString(), "value");
+        ASSERT_STREQ(e->getEvent()->get("/mapped/name").GetString(), "value");
     }
 }

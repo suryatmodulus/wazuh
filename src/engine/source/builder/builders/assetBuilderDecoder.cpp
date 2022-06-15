@@ -33,6 +33,8 @@ types::ConnectableT assetBuilderDecoder(const base::Document& def)
         WAZUH_LOG_ERROR("{}", msg);
         throw std::invalid_argument(msg);
     }
+    auto objDef = def.m_doc.GetObject();
+    std::unordered_set<std::string> proccessed;
 
     std::vector<base::Lifter> stages;
 
@@ -40,77 +42,77 @@ types::ConnectableT assetBuilderDecoder(const base::Document& def)
     stages.push_back([](base::Observable o)
                      { return o.filter([](base::Event e) { return !e->isDecoded(); }); });
 
-    // Needed to build stages in a for loop popping its attributes
-    // FIX THIS, this pop in alphabetic order
-    // normalize is pop before parse
-    std::map<std::string, const base::DocumentValue&> attributes;
-    try
-    {
-        for (auto it = def.m_doc.MemberBegin(); it != def.m_doc.MemberEnd(); ++it)
-        {
-            attributes.emplace(it->name.GetString(), it->value);
-        }
-    }
-    catch (std::exception& e)
-    {
-        const char* msg =
-            "Decoder builder encountered exception in building auxiliary map.";
-        WAZUH_LOG_ERROR("{} From exception: [{}]", msg, e.what());
-        std::throw_with_nested(std::runtime_error(msg));
-    }
+    // First get non-stage attributes and mandatory stages (check), then iterate over
+    // JsonObject
+    // TODO: once json abstraction is implemented we can use stl structures instead of
+    // JsonObject This is because JsonValue has not copy assignment operator, and maps
+    // brokens order of stages
 
-    // Attribute name
+    // Name
     std::string name;
-    try
+    if (objDef.HasMember("name"))
     {
-        name = attributes.at("name").GetString();
-        attributes.erase("name");
+        try
+        {
+            name = objDef["name"].GetString();
+            proccessed.insert("name");
+        }
+        catch (std::exception& e)
+        {
+            const char* msg =
+                "Decoder builder encountered exception building attribute name.";
+            WAZUH_LOG_ERROR("{} From exception: [{}]", msg, e.what());
+            std::throw_with_nested(std::runtime_error(msg));
+        }
     }
-    catch (std::exception& e)
+    else
     {
-        const char* msg =
-            "Decoder builder encountered exception building attribute name.";
-        WAZUH_LOG_ERROR("{} From exception: [{}]", msg, e.what());
-        std::throw_with_nested(std::invalid_argument(msg));
+        const char* msg = "Decoder builder expects definition to have a name attribute.";
+        WAZUH_LOG_ERROR("{}", msg);
+        throw std::runtime_error(msg);
     }
 
-    // Attribute parents
+    // Parents
     std::vector<std::string> parents;
-    if (attributes.count("parents") > 0)
+    if (objDef.HasMember("parents"))
     {
         try
         {
-            for (const base::DocumentValue& parentName :
-                 // TODO Check if this is an array
-                 attributes.at("parents").GetArray())
+            auto arr = objDef["parents"].GetArray();
+            for (auto& v : arr)
             {
-                parents.push_back(parentName.GetString());
+                parents.push_back(v.GetString());
             }
+            proccessed.insert("parents");
         }
         catch (std::exception& e)
         {
-            const char* msg = "Decoder builder encountered exception building "
-                              "attribute parents.";
+            const char* msg =
+                "Decoder builder encountered exception building attribute parents.";
             WAZUH_LOG_ERROR("{} From exception: [{}]", msg, e.what());
             std::throw_with_nested(std::invalid_argument(msg));
         }
-        attributes.erase("parents");
     }
 
-    // Attribute metadata
-    if (attributes.count("metadata") > 0)
+    // Metadata
+    std::map<std::string, base::Document> metadata;
+    if (objDef.HasMember("metadata"))
     {
         try
         {
-            auto metadata = attributes.at("metadata").GetObject();
-            attributes.erase("metadata");
+            auto obj = objDef["metadata"].GetObject();
+            for (auto& m : obj)
+            {
+                metadata[m.name.GetString()] = base::Document(m.value);
+            }
+            proccessed.insert("metadata");
         }
         catch (std::exception& e)
         {
-            const char* msg = "Decoder builder encountered exception building "
-                              "attribute metadata.";
+            const char* msg =
+                "Decoder builder encountered exception building attribute metadata.";
             WAZUH_LOG_ERROR("{} From exception: [{}]", msg, e.what());
-            std::throw_with_nested(std::invalid_argument(msg));
+            std::throw_with_nested(std::runtime_error(msg));
         }
     }
 
@@ -118,49 +120,51 @@ types::ConnectableT assetBuilderDecoder(const base::Document& def)
     types::ConnectableT::Tracer tr {name};
 
     // Stage check
-    try
-    {
-        stages.push_back(std::get<types::OpBuilder>(Registry::getBuilder("check"))(
-            attributes.at("check"), tr.tracerLogger()));
-        attributes.erase("check");
-    }
-    catch (std::exception& e)
-    {
-        const char* msg = "Decoder builder encountered exception building stage check.";
-        WAZUH_LOG_ERROR("{} From exception: [{}]", msg, e.what());
-        std::throw_with_nested(std::runtime_error(msg));
-    }
-
-    // Rest of stages
-    std::vector<std::string> toPop;
-    for (auto it = attributes.begin(); it != attributes.end(); ++it)
+    if (objDef.HasMember("check"))
     {
         try
         {
-            stages.push_back(std::get<types::OpBuilder>(Registry::getBuilder(it->first))(
-                it->second, tr.tracerLogger()));
-            toPop.push_back(it->first);
+            stages.push_back(std::get<types::OpBuilder>(Registry::getBuilder("check"))(
+                objDef["check"], tr.tracerLogger()));
+            proccessed.insert("check");
         }
         catch (std::exception& e)
         {
-            auto msg = fmt::format(
-                "Decoder builder encountered exception building stage [{}]", it->first);
+            const char* msg =
+                "Decoder builder encountered exception building stage check.";
             WAZUH_LOG_ERROR("{} From exception: [{}]", msg, e.what());
             std::throw_with_nested(std::runtime_error(msg));
         }
     }
-
-    // Check no strange attributes are left
-    for (auto name : toPop)
+    else
     {
-        attributes.erase(name);
-    }
-    if (!attributes.empty())
-    {
-        const char* msg =
-            "Decoder builder, json definition contains unproccessed attributes";
+        const char* msg = "Decoder builder expects value to have a check stage.";
         WAZUH_LOG_ERROR("{}", msg);
         throw std::invalid_argument(msg);
+    }
+
+    // Rest of stages
+    for (auto& m : objDef)
+    {
+        // Check that we haven't already proccessed this attribute
+        if (proccessed.find(m.name.GetString()) == proccessed.end())
+        {
+            auto stageName = m.name.GetString();
+            const auto& stageDef = m.value;
+            try
+            {
+                stages.push_back(std::get<types::OpBuilder>(
+                    Registry::getBuilder(stageName))(stageDef, tr.tracerLogger()));
+                proccessed.insert(stageName);
+            }
+            catch (std::exception& e)
+            {
+                auto msg = fmt::format(
+                    "Decoder builder encountered exception building stage {}", stageName);
+                WAZUH_LOG_ERROR("{} From exception: [{}]", msg, e.what());
+                std::throw_with_nested(std::runtime_error(msg));
+            }
+        }
     }
 
     try
