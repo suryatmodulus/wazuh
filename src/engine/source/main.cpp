@@ -90,6 +90,10 @@ static auto configureCliArgs()
 
     argParser.add_argument("trace_assets").remaining();
 
+    argParser.add_argument("--env")
+        .help("Set the environment to use")
+        .required();
+
     return argParser;
 }
 
@@ -123,6 +127,7 @@ int main(int argc, char* argv[])
     auto kvdbPath = argParser.get("--kvdbPath");
     auto traceAll = argParser.get<bool>("--trace_all");
     auto trace = argParser.get<bool>("--trace");
+    std::string environment = argParser.get("--env");
     std::vector<std::string> traceNames;
     if (trace)
     {
@@ -177,7 +182,7 @@ int main(int argc, char* argv[])
                 try
                 {
                     // Default route
-                    router.add("test_route", "test_environment");
+                    router.add("test_route", environment);
                 }
                 catch (const std::exception& e)
                 {
@@ -190,7 +195,7 @@ int main(int argc, char* argv[])
                 // Trace cerr logger
                 // TODO: this will need to be handled by the api and on the
                 // reworked router
-                auto cerrLogger = [name = "test_environment"](auto msg)
+                auto cerrLogger = [name = environment](auto msg)
                 {
                     std::stringstream ssTid;
                     ssTid << std::this_thread::get_id();
@@ -199,7 +204,7 @@ int main(int argc, char* argv[])
                 };
                 if (traceAll)
                 {
-                    router.subscribeAllTraceSinks("test_environment",
+                    router.subscribeAllTraceSinks(environment,
                                                   cerrLogger);
                 }
                 else if (trace)
@@ -207,7 +212,7 @@ int main(int argc, char* argv[])
                     for (auto assetName : traceNames)
                     {
                         router.subscribeTraceSink(
-                            "test_environment", assetName, cerrLogger);
+                            environment, assetName, cerrLogger);
                     }
                 }
 
