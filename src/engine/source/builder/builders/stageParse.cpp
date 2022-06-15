@@ -26,8 +26,7 @@
 
 namespace builder::internals::builders
 {
-static bool
-any2Json(std::any const& anyVal, std::string const& path, json::Document* doc)
+static bool any2Json(std::any const& anyVal, std::string const& path, json::Document* doc)
 {
     auto& type = anyVal.type();
     if (type == typeid(void))
@@ -86,14 +85,13 @@ any2Json(std::any const& anyVal, std::string const& path, json::Document* doc)
     return true;
 }
 
-base::Lifter stageBuilderParse(const base::DocumentValue& def,
-                                types::TracerFn tr)
+base::Lifter stageBuilderParse(const base::DocumentValue& def, types::TracerFn tr)
 {
     // Assert value is as expected
     if (!def.IsObject())
     {
-        std::string msg = fmt::format(
-            "[Stage parse] builder, expected array but got {}", def.GetType());
+        std::string msg = fmt::format("[Stage parse] builder, expected array but got {}",
+                                      def.GetType());
         WAZUH_LOG_ERROR("{}", msg);
         throw std::invalid_argument(msg);
     }
@@ -136,27 +134,30 @@ base::Lifter stageBuilderParse(const base::DocumentValue& def,
         }
         catch (std::runtime_error& e)
         {
-            const char* msg =
-                "Stage [parse] builder encountered exception parsing logQl "
-                "expr";
+            const char* msg = "Stage [parse] builder encountered exception parsing logQl "
+                              "expr";
             WAZUH_LOG_ERROR("{} From exception: {}", msg, e.what());
             std::throw_with_nested(std::runtime_error(msg));
         }
-
+        std::string logqlExpression = logql->value.GetString();
         auto newOp = [name = std::string {logql->name.GetString()},
-                      parserOp = std::move(parseOp), tr](base::Observable o)
+                      parserOp = std::move(parseOp),
+                      tr,
+                      logqlExpression](base::Observable o)
         {
             return o.map(
                 [name = std::move(name),
-                 parserOp = std::move(parserOp), tr](base::Event e)
+                 parserOp = std::move(parserOp),
+                 tr,
+                 logqlExpression](base::Event e)
                 {
                     // TODO handle item not existing in event
                     auto jsonName = json::formatJsonPath(name);
                     const auto& ev = e->getEvent()->get(jsonName);
                     if (!ev.IsString())
                     {
-                        tr(fmt::format("[Stage parse] {} is not a string",
-                                       jsonName));
+                        tr(fmt::format(
+                            "{{{}: {}}} is not a string", jsonName, logqlExpression));
                         return e;
                     }
 
@@ -164,23 +165,27 @@ base::Lifter stageBuilderParse(const base::DocumentValue& def,
                     auto ok = parserOp(ev.GetString(), result);
                     if (!ok)
                     {
-                        tr(fmt::format("[Stage parse] {} failed to parse",
-                                       jsonName));
+                        tr(fmt::format("{{{}: {}}} failed to parse\nParser trace: {}",
+                                       jsonName,
+                                       logqlExpression,
+                                       ok.trace));
                         return e;
                     }
 
                     for (auto const& val : result)
                     {
-                        auto resultPath =
-                            json::formatJsonPath(val.first.c_str());
+                        auto resultPath = json::formatJsonPath(val.first.c_str());
                         if (!any2Json(val.second, resultPath, e->getEvent().get()))
                         {
-                            tr(fmt::format("[Stage parse] failed to set {}",
-                                           resultPath));
+                            tr(fmt::format(
+                                "{{{}}} failed to set {}", jsonName, resultPath));
                             return e;
                         }
                     }
-
+                    tr(fmt::format("{{{}: {}}} successfully\nParser trace: {}",
+                                   jsonName,
+                                   logqlExpression,
+                                   ok.trace));
                     return e;
                 });
         };
